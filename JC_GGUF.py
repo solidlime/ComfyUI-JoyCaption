@@ -12,20 +12,41 @@ import sys
 import gc
 import os
 from huggingface_hub import hf_hub_download
+import logging
+
+logger = logging.getLogger('ComfyUI.JoyCaption.GGUF')
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('[%(name)s] %(levelname)s: %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 class ModelLoadError(Exception):
     pass
 
 def suppress_output(func):
+    """Suppress stdout but capture stderr for logging"""
     import sys
     import io
     def wrapper(*args, **kwargs):
         old_stdout = sys.stdout
         old_stderr = sys.stderr
+        captured_stderr = io.StringIO()
         try:
-            sys.stdout = io.StringIO()
-            sys.stderr = io.StringIO()
-            return func(*args, **kwargs)
+            sys.stdout = io.StringIO()  # Suppress normal output
+            sys.stderr = captured_stderr  # Capture error output
+            result = func(*args, **kwargs)
+            # If there were errors, log them
+            stderr_content = captured_stderr.getvalue()
+            if stderr_content:
+                logger.warning(f"llama-cpp-python stderr: {stderr_content}")
+            return result
+        except Exception as e:
+            # Log captured stderr before re-raising
+            stderr_content = captured_stderr.getvalue()
+            if stderr_content:
+                logger.error(f"llama-cpp-python error output: {stderr_content}")
+            raise
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
@@ -96,22 +117,46 @@ class JC_GGUF_Models:
                 if "/" not in model:
                     raise ValueError("Invalid model path")
                 repo_path, filename = model.rsplit("/", 1)
-                local_path = Path(hf_hub_download(
-                    repo_id=repo_path,
-                    filename=filename,
-                    local_dir=str(llm_models_dir),
-                    local_dir_use_symlinks=False
-                )).resolve()
+                try:
+                    logger.info(f"Downloading GGUF model {model}...")
+                    local_path = Path(hf_hub_download(
+                        repo_id=repo_path,
+                        filename=filename,
+                        local_dir=str(llm_models_dir),
+                        local_dir_use_symlinks=False
+                    )).resolve()
+                    logger.info(f"GGUF model downloaded successfully")
+                except Exception as e:
+                    logger.error(f"Failed to download GGUF model {model}: {e}")
+                    if "HTTPSConnectionPool" in str(e) or "ConnectionError" in str(e):
+                        raise ModelLoadError(f"Network error while downloading GGUF model {model}. Please check your internet connection.")
+                    elif "401" in str(e) or "403" in str(e):
+                        raise ModelLoadError(f"Authentication error while downloading GGUF model {model}. Please check your HuggingFace credentials.")
+                    elif "404" in str(e) or "RepositoryNotFoundError" in str(e):
+                        raise ModelLoadError(f"GGUF model {model} not found on HuggingFace Hub.")
+                    elif "No space left" in str(e) or "OSError" in str(e):
+                        raise ModelLoadError(f"Disk space error while downloading GGUF model {model}. Please free up disk space.")
+                    else:
+                        raise ModelLoadError(f"Error downloading GGUF model {model}: {e}")
             
             mmproj_filename = GGUF_SETTINGS["mmproj_filename"]
             mmproj_path = llm_models_dir / mmproj_filename
             if not mmproj_path.exists():
-                mmproj_path = Path(hf_hub_download(
-                    repo_id="concedo/llama-joycaption-beta-one-hf-llava-mmproj-gguf",
-                    filename=mmproj_filename,
-                    local_dir=str(llm_models_dir),
-                    local_dir_use_symlinks=False
-                )).resolve()
+                try:
+                    logger.info(f"Downloading vision projection model {mmproj_filename}...")
+                    mmproj_path = Path(hf_hub_download(
+                        repo_id="concedo/llama-joycaption-beta-one-hf-llava-mmproj-gguf",
+                        filename=mmproj_filename,
+                        local_dir=str(llm_models_dir),
+                        local_dir_use_symlinks=False
+                    )).resolve()
+                    logger.info(f"Vision projection model downloaded successfully")
+                except Exception as e:
+                    logger.error(f"Failed to download vision projection model: {e}")
+                    if "HTTPSConnectionPool" in str(e) or "ConnectionError" in str(e):
+                        raise ModelLoadError(f"Network error while downloading vision projection model. Please check your internet connection.")
+                    else:
+                        raise ModelLoadError(f"Error downloading vision projection model: {e}")
             
             n_ctx = MODEL_SETTINGS["context_window"]
             n_batch = 2048
@@ -191,8 +236,12 @@ class JC_GGUF_Models:
             
             return response["choices"][0]["message"]["content"].strip()
             
+        except ModelLoadError:
+            # Re-raise model load errors without wrapping
+            raise
         except Exception as e:
-            return f"Generation error: {str(e)}"
+            logger.error(f"Generation error: {e}")
+            raise RuntimeError(f"Generation error: {str(e)}")
         finally:
             gc.collect()
     
@@ -231,35 +280,29 @@ class JC_GGUF:
     
     def generate(self, image, model, processing_mode, prompt_style, caption_length, memory_management, extra_options=None):
         try:
-            print(f"JoyCaption GGUF: Processing image with {model} ({processing_mode} mode)")
+            logger.info(f"JoyCaption GGUF: Processing image with {model} ({processing_mode} mode)")
             cache_key = f"{model}_{processing_mode}"
             
             if memory_management == "Global Cache":
-                try:
-                    if cache_key in _MODEL_CACHE:
-                        self.predictor = _MODEL_CACHE[cache_key]
-                    else:
-                        model_name = GGUF_MODELS[model]["name"]
-                        self.predictor = JC_GGUF_Models(model_name, processing_mode)
-                        _MODEL_CACHE[cache_key] = self.predictor
-                except Exception as e:
-                    return (f"Error loading model: {e}",)
+                if cache_key in _MODEL_CACHE:
+                    self.predictor = _MODEL_CACHE[cache_key]
+                else:
+                    model_name = GGUF_MODELS[model]["name"]
+                    self.predictor = JC_GGUF_Models(model_name, processing_mode)
+                    _MODEL_CACHE[cache_key] = self.predictor
             elif self.predictor is None or self.current_processing_mode != processing_mode or self.current_model != model:
                 if self.predictor is not None:
                     del self.predictor
                     self.predictor = None
                     torch.cuda.empty_cache()
-                try:
-                    model_name = GGUF_MODELS[model]["name"]
-                    self.predictor = JC_GGUF_Models(model_name, processing_mode)
-                    self.current_processing_mode = processing_mode
-                    self.current_model = model
-                except Exception as e:
-                    return (f"Error loading model: {e}",)
+                model_name = GGUF_MODELS[model]["name"]
+                self.predictor = JC_GGUF_Models(model_name, processing_mode)
+                self.current_processing_mode = processing_mode
+                self.current_model = model
 
             prompt_text = build_prompt(prompt_style, caption_length, extra_options[0] if extra_options else [], extra_options[1] if extra_options else "{NAME}")
 
-            print("JoyCaption GGUF: Generating caption...")
+            logger.info("JoyCaption GGUF: Generating caption...")
             with torch.inference_mode():
                 pil_image = ToPILImage()(image[0].permute(2, 0, 1))
                 response = self.predictor.generate(
@@ -326,27 +369,21 @@ class JC_GGUF_adv:
             cache_key = f"{model}_{processing_mode}"
             
             if memory_management == "Global Cache":
-                try:
-                    if cache_key in _MODEL_CACHE:
-                        self.predictor = _MODEL_CACHE[cache_key]
-                    else:
-                        model_name = GGUF_MODELS[model]["name"]
-                        self.predictor = JC_GGUF_Models(model_name, processing_mode)
-                        _MODEL_CACHE[cache_key] = self.predictor
-                except Exception as e:
-                    return ("", f"Error loading model: {e}")
+                if cache_key in _MODEL_CACHE:
+                    self.predictor = _MODEL_CACHE[cache_key]
+                else:
+                    model_name = GGUF_MODELS[model]["name"]
+                    self.predictor = JC_GGUF_Models(model_name, processing_mode)
+                    _MODEL_CACHE[cache_key] = self.predictor
             elif self.predictor is None or self.current_processing_mode != processing_mode or self.current_model != model:
                 if self.predictor is not None:
                     del self.predictor
                     self.predictor = None
                     torch.cuda.empty_cache()
-                try:
-                    model_name = GGUF_MODELS[model]["name"]
-                    self.predictor = JC_GGUF_Models(model_name, processing_mode)
-                    self.current_processing_mode = processing_mode
-                    self.current_model = model
-                except Exception as e:
-                    return ("", f"Error loading model: {e}")
+                model_name = GGUF_MODELS[model]["name"]
+                self.predictor = JC_GGUF_Models(model_name, processing_mode)
+                self.current_processing_mode = processing_mode
+                self.current_model = model
 
             prompt = custom_prompt if custom_prompt.strip() else build_prompt(prompt_style, caption_length, extra_options[0] if extra_options else [], extra_options[1] if extra_options else "{NAME}")
             system_prompt = MODEL_SETTINGS["default_system_prompt"]

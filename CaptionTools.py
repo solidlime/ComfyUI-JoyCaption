@@ -3,6 +3,14 @@ from pathlib import Path
 import torch
 import numpy as np
 from PIL import Image, ImageOps
+import logging
+
+logger = logging.getLogger('ComfyUI.JoyCaption.Tools')
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('[%(name)s] %(levelname)s: %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 class ImageBatchPath:
     @classmethod
@@ -61,7 +69,7 @@ class ImageBatchPath:
                 images.append(image)
                 image_paths.append(img_path)
             except Exception as e:
-                print(f'\033[91mError loading {filename}: {str(e)}\033[0m')
+                logger.error(f'Error loading {filename}: {str(e)}')
                 continue
 
         return (images, image_paths)
@@ -115,7 +123,7 @@ class CaptionSaver:
                 
                 with open(txt_path, 'w', encoding='utf-8') as f:
                     f.write(string)
-                print(f'\033[93m[{txt_path.name}]:\033[0m {string}')
+                logger.info(f'[{txt_path.name}]: {string}')
                 
                 if image is not None and custom_output_path.strip():
                     try:

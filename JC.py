@@ -7,6 +7,14 @@ from torchvision.transforms import ToPILImage
 import json
 import gc
 import os
+import logging
+
+logger = logging.getLogger('ComfyUI.JoyCaption')
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('[%(name)s] %(levelname)s: %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 class ModelLoadError(Exception):
     pass
@@ -90,10 +98,10 @@ class JC_Models:
                 self.device = _MODEL_CACHE[cache_key]["device"]
                 if not next(self.model.parameters()).is_cuda:
                     raise RuntimeError("Cached model not on GPU")
-                print(f"Using cached model: {cache_key}")
+                logger.info(f"Using cached model: {cache_key}")
                 return
             except Exception as e:
-                print(f"Cache validation failed: {e}, reloading model...")
+                logger.warning(f"Cache validation failed: {e}, reloading model...")
                 if cache_key in _MODEL_CACHE:
                     del _MODEL_CACHE[cache_key]
                 torch.cuda.empty_cache()
@@ -101,7 +109,22 @@ class JC_Models:
         checkpoint_path = Path(folder_paths.models_dir) / "LLM" / Path(model).stem
         if not checkpoint_path.exists():
             from huggingface_hub import snapshot_download
-            snapshot_download(repo_id=model, local_dir=str(checkpoint_path), force_download=False, local_files_only=False)
+            try:
+                logger.info(f"Downloading model {model} to {checkpoint_path}...")
+                snapshot_download(repo_id=model, local_dir=str(checkpoint_path), force_download=False, local_files_only=False)
+                logger.info(f"Model downloaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to download model {model}: {e}")
+                if "HTTPSConnectionPool" in str(e) or "ConnectionError" in str(e):
+                    raise ModelLoadError(f"Network error while downloading model {model}. Please check your internet connection.")
+                elif "401" in str(e) or "403" in str(e):
+                    raise ModelLoadError(f"Authentication error while downloading model {model}. Please check your HuggingFace credentials.")
+                elif "404" in str(e) or "RepositoryNotFoundError" in str(e):
+                    raise ModelLoadError(f"Model {model} not found on HuggingFace Hub.")
+                elif "No space left" in str(e) or "OSError" in str(e):
+                    raise ModelLoadError(f"Disk space error while downloading model {model}. Please free up disk space.")
+                else:
+                    raise ModelLoadError(f"Error downloading model {model}: {e}")
         
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
@@ -290,24 +313,18 @@ class JC:
             validate_model_parameters(quantization, list(MEMORY_EFFICIENT_CONFIGS.keys()))
             
             if memory_management == "Global Cache":
-                try:
-                    model_name = HF_MODELS[model]["name"]
-                    self.predictor = JC_Models(model_name, quantization)
-                except Exception as e:
-                    return (f"Error loading model: {e}",)
+                model_name = HF_MODELS[model]["name"]
+                self.predictor = JC_Models(model_name, quantization)
             elif self.predictor is None or self.current_memory_mode != quantization or self.current_model != model:
                 if self.predictor is not None:
                     del self.predictor
                     self.predictor = None
                     torch.cuda.empty_cache()
                     gc.collect()
-                try:
-                    model_name = HF_MODELS[model]["name"]
-                    self.predictor = JC_Models(model_name, quantization)
-                    self.current_memory_mode = quantization
-                    self.current_model = model
-                except Exception as e:
-                    return (f"Error loading model: {e}",)
+                model_name = HF_MODELS[model]["name"]
+                self.predictor = JC_Models(model_name, quantization)
+                self.current_memory_mode = quantization
+                self.current_model = model
 
             prompt = build_prompt(prompt_style, caption_length, extra_options[0] if extra_options else [], extra_options[1] if extra_options else "{NAME}")
             system_prompt = MODEL_SETTINGS["default_system_prompt"]
@@ -377,24 +394,18 @@ class JC_adv:
             validate_model_parameters(quantization, list(MEMORY_EFFICIENT_CONFIGS.keys()))
             
             if memory_management == "Global Cache":
-                try:
-                    model_name = HF_MODELS[model]["name"]
-                    self.predictor = JC_Models(model_name, quantization)
-                except Exception as e:
-                    return (f"Error loading model: {e}", "")
+                model_name = HF_MODELS[model]["name"]
+                self.predictor = JC_Models(model_name, quantization)
             elif self.predictor is None or self.current_memory_mode != quantization or self.current_model != model:
                 if self.predictor is not None:
                     del self.predictor
                     self.predictor = None
                     torch.cuda.empty_cache()
                     gc.collect()
-                try:
-                    model_name = HF_MODELS[model]["name"]
-                    self.predictor = JC_Models(model_name, quantization)
-                    self.current_memory_mode = quantization
-                    self.current_model = model
-                except Exception as e:
-                    return (f"Error loading model: {e}", "")
+                model_name = HF_MODELS[model]["name"]
+                self.predictor = JC_Models(model_name, quantization)
+                self.current_memory_mode = quantization
+                self.current_model = model
 
             if custom_prompt and custom_prompt.strip():
                 prompt = custom_prompt.strip()

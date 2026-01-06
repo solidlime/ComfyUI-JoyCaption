@@ -2,6 +2,14 @@ import os
 import importlib
 import sys
 from pathlib import Path
+import logging
+
+logger = logging.getLogger('ComfyUI.JoyCaption.Init')
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter('[%(name)s] %(levelname)s: %(message)s'))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 current_dir = Path(__file__).parent
 
@@ -24,24 +32,21 @@ try:
     GGUF_AVAILABLE = True
 except ImportError:
     # Use Windows color codes for better visibility
-    print("\n" + "=" * 80)
-    print("\033[91mWARNING: llama-cpp-python library not found, GGUF functionality is not available\033[0m")
-    print("\033[93mTo use GGUF features, install additional dependencies:\033[0m")
-    print("\033[96mpip install -r requirements_gguf.txt\033[0m")
+    logger.warning("="*80)
+    logger.warning("llama-cpp-python library not found, GGUF functionality is not available")
+    logger.warning("To use GGUF features, install additional dependencies:")
+    logger.info("pip install -r requirements_gguf.txt")
     
     # Check if installation guide exists and provide link
     install_guide = current_dir / "llama_cpp_install.md"
     if install_guide.exists():
-        print("\033[93mFor detailed installation instructions with CUDA support, please see:\033[0m")
-        print(f"\033[96m{install_guide}\033[0m")
+        logger.info(f"For detailed installation instructions with CUDA support, please see: {install_guide}")
     
-    print("\033[92mBasic JoyCaption functionality is still available\033[0m")
-    print("=" * 80 + "\n")
+    logger.info("Basic JoyCaption functionality is still available")
+    logger.warning("="*80)
 except Exception as e:
-    print("\n" + "=" * 80)
-    print(f"\033[91mError loading GGUF dependencies: {str(e)}\033[0m")
-    print("\033[92mBasic JoyCaption functionality is still available\033[0m")
-    print("=" * 80 + "\n")
+    logger.error(f"Error loading GGUF dependencies: {str(e)}")
+    logger.info("Basic JoyCaption functionality is still available")
 
 # Process all Python files in a deterministic order to avoid import-time races
 for file in sorted(current_dir.glob('*.py')):
@@ -64,8 +69,8 @@ for file in sorted(current_dir.glob('*.py')):
             if hasattr(module, 'NODE_DISPLAY_NAME_MAPPINGS'):
                 NODE_DISPLAY_NAME_MAPPINGS.update(module.NODE_DISPLAY_NAME_MAPPINGS)
         except Exception as e:
-            print(f"Error loading module {module_name}: {str(e)}")
+            logger.error(f"Error loading module {module_name}: {str(e)}")
             if module_name != 'JC_GGUF':  # Only show warning for non-GGUF modules
-                print(f"Warning: Failed to load {module_name} module")
+                logger.warning(f"Failed to load {module_name} module")
 
 __all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS']
