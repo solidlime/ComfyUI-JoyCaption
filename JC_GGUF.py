@@ -81,11 +81,11 @@ if custom_path.exists():
         with open(custom_path, "r", encoding="utf-8") as f:
             custom_data = json.load(f) or {}
         GGUF_MODELS.update(custom_data.get("gguf_models", {}))
-        print("[JoyCaption GGUF] ✅ Loaded custom GGUF custom models")
+        logger.info("[JoyCaption GGUF] Loaded custom GGUF models")
     except Exception as e:
-        print(f"[JoyCaption GGUF] ⚠️ Failed to load custom models → {e}")
+        logger.warning(f"[JoyCaption GGUF] Failed to load custom models: {e}")
 else:
-    print("[JoyCaption GGUF] ℹ️ No custom models found, skipping user-defined GGUF models.")
+    logger.info("[JoyCaption GGUF] No custom models found, skipping user-defined GGUF models.")
 # -------------------------------------------------------
 
 _MODEL_CACHE = {}
@@ -232,8 +232,6 @@ class JC_GGUF_Models:
 
             response = self._create_completion(completion_params)
             
-            del messages
-            
             return response["choices"][0]["message"]["content"].strip()
             
         except ModelLoadError:
@@ -243,6 +241,21 @@ class JC_GGUF_Models:
             logger.error(f"Generation error: {e}")
             raise RuntimeError(f"Generation error: {str(e)}")
         finally:
+            # Clean up resources to prevent memory accumulation in batch processing
+            if 'messages' in locals():
+                del messages
+            if 'img_buffer' in locals():
+                del img_buffer
+            if 'img_base64' in locals():
+                del img_base64
+            if 'data_uri' in locals():
+                del data_uri
+            if 'image' in locals():
+                del image
+            if 'response' in locals():
+                del response
+            if 'completion_params' in locals():
+                del completion_params
             gc.collect()
     
     @suppress_output
@@ -314,7 +327,9 @@ class JC_GGUF:
                     top_p=MODEL_SETTINGS["default_top_p"],
                     top_k=MODEL_SETTINGS["default_top_k"],
                 )
-            print("JoyCaption GGUF: Caption generation completed")
+                # Clean up PIL image
+                del pil_image
+            logger.info("JoyCaption GGUF: Caption generation completed")
 
             if memory_management == "Clear After Run":
                 del self.predictor
@@ -398,6 +413,9 @@ class JC_GGUF_adv:
                 top_p=top_p,
                 top_k=top_k,
             )
+            
+            # Clean up PIL image
+            del pil_image
 
             if memory_management == "Clear After Run":
                 del self.predictor

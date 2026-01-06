@@ -236,39 +236,52 @@ class JC_Models:
     @torch.inference_mode()
     def generate(self, image: Image.Image, system: str, prompt: str, max_new_tokens: int, temperature: float, top_p: float, top_k: int) -> str:
         """Generates a caption for the given image."""
-        convo = [
-            {"role": "system", "content": system.strip()},
-            {"role": "user", "content": prompt.strip()},
-        ]
+        try:
+            convo = [
+                {"role": "system", "content": system.strip()},
+                {"role": "user", "content": prompt.strip()},
+            ]
 
-        convo_string = self.processor.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
-        assert isinstance(convo_string, str)
+            convo_string = self.processor.apply_chat_template(convo, tokenize=False, add_generation_prompt=True)
+            assert isinstance(convo_string, str)
 
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        image = image.resize(self.target_size, Image.Resampling.LANCZOS)
-        
-        inputs = self.processor(text=[convo_string], images=[image], return_tensors="pt").to(self.device)
-        
-        if hasattr(inputs, 'pixel_values') and inputs['pixel_values'] is not None:
-            inputs['pixel_values'] = inputs['pixel_values'].to(self.model.dtype)
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            image = image.resize(self.target_size, Image.Resampling.LANCZOS)
+            
+            inputs = self.processor(text=[convo_string], images=[image], return_tensors="pt").to(self.device)
+            
+            if hasattr(inputs, 'pixel_values') and inputs['pixel_values'] is not None:
+                inputs['pixel_values'] = inputs['pixel_values'].to(self.model.dtype)
 
-        with torch.cuda.amp.autocast(enabled=True):
-            generate_ids = self.model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=True if temperature > 0 else False,
-                suppress_tokens=None,
-                use_cache=True,
-                temperature=temperature,
-                top_k=None if top_k == 0 else top_k,
-                top_p=top_p,
-            )[0]
+            with torch.cuda.amp.autocast(enabled=True):
+                generate_ids = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=True if temperature > 0 else False,
+                    suppress_tokens=None,
+                    use_cache=True,
+                    temperature=temperature,
+                    top_k=None if top_k == 0 else top_k,
+                    top_p=top_p,
+                )[0]
 
-        generate_ids = generate_ids[inputs['input_ids'].shape[1]:]
-        caption = self.processor.tokenizer.decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
-        return caption.strip()
+            generate_ids = generate_ids[inputs['input_ids'].shape[1]:]
+            caption = self.processor.tokenizer.decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            
+            return caption.strip()
+        finally:
+            # Clean up tensors to prevent memory accumulation in batch processing
+            if 'inputs' in locals():
+                del inputs
+            if 'generate_ids' in locals():
+                del generate_ids
+            if 'image' in locals():
+                del image
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
 
 class JC_ExtraOptions:
     """A node to collect extra options for captioning."""
@@ -352,6 +365,9 @@ class JC:
                 top_p=MODEL_SETTINGS["default_top_p"],
                 top_k=MODEL_SETTINGS["default_top_k"],
             )
+            
+            # Clean up PIL image
+            del pil_image
 
             if memory_management == "Clear After Run":
                 del self.predictor
@@ -437,6 +453,9 @@ class JC_adv:
                 top_p=top_p,
                 top_k=top_k,
             )
+            
+            # Clean up PIL image
+            del pil_image
 
             if memory_management == "Clear After Run":
                 del self.predictor
