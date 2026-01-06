@@ -89,6 +89,11 @@ _MODEL_CACHE = {}
 class JC_Models:
     """Handles loading, caching, and running the LLaVA models."""
     def __init__(self, model: str, memory_mode: str):
+        # Initialize attributes to None first to avoid AttributeError in cleanup
+        self.model = None
+        self.processor = None
+        self.device = None
+        
         cache_key = f"{model}_{memory_mode}"
         
         if cache_key in _MODEL_CACHE:
@@ -218,6 +223,14 @@ class JC_Models:
                 
         except Exception as e:
             cleanup_model_resources(self.model, self.processor)
+            # Provide helpful error messages for common issues
+            if "OutOfMemoryError" in str(type(e).__name__) or "CUDA out of memory" in str(e):
+                available_modes = list(MEMORY_EFFICIENT_CONFIGS.keys())
+                current_mode_idx = available_modes.index(memory_mode) if memory_mode in available_modes else -1
+                suggestion = ""
+                if current_mode_idx < len(available_modes) - 1:
+                    suggestion = f" Try using '{available_modes[current_mode_idx + 1]}' for lower VRAM usage."
+                raise ModelLoadError(f"CUDA out of memory while loading model with '{memory_mode}' quantization.{suggestion} Current VRAM may be insufficient.")
             handle_model_error(e)
     
     @torch.inference_mode()
